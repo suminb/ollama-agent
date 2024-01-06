@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -16,7 +17,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/google/go-github/v57/github"
 )
 
 func handleError(ctx *gin.Context, err error) {
@@ -144,7 +147,7 @@ func dequeue(ctx *context.Context, queueUrl string) *types.Message {
 
 		return &msgResult.Messages[0]
 	} else {
-		fmt.Println("No messages found")
+		fmt.Print(".")
 		return nil
 	}
 }
@@ -152,8 +155,11 @@ func dequeue(ctx *context.Context, queueUrl string) *types.Message {
 type OllamaRequestMessage struct {
 	RunNumber int
 	PrNumber  int
-	RepoName  string
-	PromptUrl string
+	OwnerName string // repository owner
+	RepoName  string // repository name
+	BaseRef   string // base branch
+	HeadRef   string // head branch
+	PromptUrl string // S3 URL that contains the prompt
 }
 
 const queueUrl string = "https://sqs.ap-northeast-2.amazonaws.com/236145864830/auto-code-review"
@@ -162,7 +168,7 @@ func processMessage(ctx *context.Context, message *types.Message) {
 	var ollamaRequestMessage OllamaRequestMessage
 	err := json.Unmarshal([]byte(*message.Body), &ollamaRequestMessage)
 	if err != nil {
-		fmt.Println("Error parsing message")
+		log.Fatalln("Error parsing message")
 		panic(err)
 	}
 
@@ -170,14 +176,28 @@ func processMessage(ctx *context.Context, message *types.Message) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Prompt:\n%s\n\n", promptString)
+	log.Printf("Prompt:\n%s\n\n", promptString)
 
 	out, err := exec.Command("ollama", "run", "magicoder", string(promptString)).Output()
 	if err != nil {
 		panic(err)
 	}
+	reviewResult := string(out)
 
-	fmt.Printf("Review:\n%s\n", string(out))
+	log.Printf("Review:\n%s\n", reviewResult)
+
+	compareLink := fmt.Sprintf("[%s...%s](/%s/%s/compare/%s...%s)",
+		ollamaRequestMessage.BaseRef, ollamaRequestMessage.HeadRef,
+		ollamaRequestMessage.OwnerName, ollamaRequestMessage.RepoName,
+		ollamaRequestMessage.BaseRef, ollamaRequestMessage.HeadRef)
+	reviewComment := fmt.Sprintf("This is an auto-generated code review for %s\n\n%s",
+		compareLink, reviewResult)
+	writeComment(
+		ctx,
+		ollamaRequestMessage.OwnerName,
+		ollamaRequestMessage.RepoName,
+		ollamaRequestMessage.PrNumber,
+		reviewComment)
 
 	cfg, _ := config.LoadDefaultConfig(*ctx)
 	client := sqs.NewFromConfig(cfg)
@@ -188,15 +208,41 @@ func processMessage(ctx *context.Context, message *types.Message) {
 	})
 }
 
+func authGitHubApp(ctx *context.Context) *github.Client {
+	appId := int64(788325)
+	installationId := int64(45833995)
+	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, "ollama-reviewer.2024-01-06.private-key.pem")
+
+	if err != nil {
+		panic(err)
+	}
+
+	// Use installation transport with client.
+	client := github.NewClient(&http.Client{Transport: itr})
+
+	return client
+}
+
+func writeComment(ctx *context.Context, owner string, repo string, prNumber int, comment string) {
+	client := authGitHubApp(ctx)
+
+	input := github.IssueComment{Body: github.String(comment)}
+	createdComment, _, err := client.Issues.CreateComment(*ctx, "suminb", repo, prNumber, &input)
+	if err != nil {
+		log.Fatalf("Issues.CreateComment returned error: %v", err)
+	}
+	log.Printf("%v\n", github.Stringify(createdComment))
+}
+
 func main() {
 	ctx := context.Background()
 
-	for true {
+	for {
 		message := dequeue(&ctx, queueUrl)
 		if message != nil {
 			processMessage(&ctx, message)
 		} else {
-			time.Sleep(1 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 	}
 
