@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -22,15 +25,15 @@ func handleError(ctx *gin.Context, err error) {
 	})
 }
 
-func downloadPrompt(ctx context.Context, s3Url string) ([]byte, error) {
-	sdkConfig, err := config.LoadDefaultConfig(ctx)
+func downloadPrompt(ctx *context.Context, s3Url string) ([]byte, error) {
+	sdkConfig, err := config.LoadDefaultConfig(*ctx)
 	if err != nil {
 		return nil, errors.New("couldn't load default configuration. Have you set up your AWS account?")
 	}
 	s3Client := s3.NewFromConfig(sdkConfig)
 
 	u, _ := url.Parse(s3Url)
-	s3ObjectOutput, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+	s3ObjectOutput, err := s3Client.GetObject(*ctx, &s3.GetObjectInput{
 		Bucket: aws.String(u.Host),
 		Key:    aws.String(u.Path[1:]),
 	})
@@ -115,9 +118,8 @@ func RemoveMessage(c context.Context, api SQSDeleteMessageAPI, input *sqs.Delete
 	return api.DeleteMessage(c, input)
 }
 
-func dequeue(ctx context.Context, queueUrl string) {
-	cfg, err := config.LoadDefaultConfig(ctx)
-
+func dequeue(ctx *context.Context, queueUrl string) *types.Message {
+	cfg, err := config.LoadDefaultConfig(*ctx)
 	client := sqs.NewFromConfig(cfg)
 
 	gMInput := &sqs.ReceiveMessageInput{
@@ -129,30 +131,74 @@ func dequeue(ctx context.Context, queueUrl string) {
 		VisibilityTimeout:   60,
 	}
 
-	msgResult, err := GetMessages(ctx, client, gMInput)
+	msgResult, err := GetMessages(*ctx, client, gMInput)
 	if err != nil {
 		fmt.Println("Got an error receiving messages:")
 		fmt.Println(err)
-		return
+		return nil
 	}
 
-	if msgResult.Messages != nil {
-		fmt.Println("Message ID:     " + *msgResult.Messages[0].MessageId)
+	if msgResult.Messages != nil && len(msgResult.Messages) > 0 {
+		fmt.Println("Message ID:   " + *msgResult.Messages[0].MessageId)
 		fmt.Println("Message Body: " + *msgResult.Messages[0].Body)
+
+		return &msgResult.Messages[0]
 	} else {
 		fmt.Println("No messages found")
+		return nil
+	}
+}
+
+type OllamaRequestMessage struct {
+	RunNumber int
+	PrNumber  int
+	RepoName  string
+	PromptUrl string
+}
+
+const queueUrl string = "https://sqs.ap-northeast-2.amazonaws.com/236145864830/auto-code-review"
+
+func processMessage(ctx *context.Context, message *types.Message) {
+	var ollamaRequestMessage OllamaRequestMessage
+	err := json.Unmarshal([]byte(*message.Body), &ollamaRequestMessage)
+	if err != nil {
+		fmt.Println("Error parsing message")
+		panic(err)
 	}
 
-	RemoveMessage(ctx, client, &sqs.DeleteMessageInput{
-		QueueUrl:      &queueUrl,
-		ReceiptHandle: msgResult.Messages[0].ReceiptHandle,
+	promptString, err := downloadPrompt(ctx, ollamaRequestMessage.PromptUrl)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Prompt:\n%s\n\n", promptString)
+
+	out, err := exec.Command("ollama", "run", "magicoder", string(promptString)).Output()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Review:\n%s\n", string(out))
+
+	cfg, _ := config.LoadDefaultConfig(*ctx)
+	client := sqs.NewFromConfig(cfg)
+	_queueUrl := queueUrl
+	RemoveMessage(*ctx, client, &sqs.DeleteMessageInput{
+		QueueUrl:      &_queueUrl,
+		ReceiptHandle: message.ReceiptHandle,
 	})
 }
 
 func main() {
 	ctx := context.Background()
 
-	dequeue(ctx, "https://sqs.ap-northeast-2.amazonaws.com/236145864830/auto-code-review")
+	for true {
+		message := dequeue(&ctx, queueUrl)
+		if message != nil {
+			processMessage(&ctx, message)
+		} else {
+			time.Sleep(1 * time.Second)
+		}
+	}
 
 	// 	r := gin.Default()
 	// 	r.GET("/ping", func(c *gin.Context) {
