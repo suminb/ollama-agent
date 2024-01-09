@@ -20,6 +20,7 @@ import (
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v57/github"
+	"github.com/redis/go-redis/v9"
 )
 
 func handleError(ctx *gin.Context, err error) {
@@ -237,14 +238,30 @@ func writeComment(ctx *context.Context, owner string, repo string, prNumber int,
 func main() {
 	ctx := context.Background()
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "redis-n3r.n3r-project-test-sb.svc.mdpb1.io.navercorp.com:6379",
+		Password: "default", // no password set
+		DB:       0,         // use default DB
+	})
+
 	for {
-		message := dequeue(&ctx, queueUrl)
-		if message != nil {
-			processMessage(&ctx, message)
+		val, err := rdb.LPop(ctx, "foo").Result()
+		if err != nil {
+			fmt.Print(".")
+			time.Sleep(1 * time.Second)
 		} else {
-			time.Sleep(5 * time.Second)
+			fmt.Printf("%s\n", val)
 		}
 	}
+
+	// for {
+	// 	message := dequeue(&ctx, queueUrl)
+	// 	if message != nil {
+	// 		processMessage(&ctx, message)
+	// 	} else {
+	// 		time.Sleep(5 * time.Second)
+	// 	}
+	// }
 
 	// 	r := gin.Default()
 	// 	r.GET("/ping", func(c *gin.Context) {
