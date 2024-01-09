@@ -1,4 +1,4 @@
-module shortbread.io/ollama-server
+module shortbread.io/ollama-agent
 
 go 1.21.5
 
