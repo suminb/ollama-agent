@@ -122,7 +122,7 @@ func RemoveMessage(c context.Context, api SQSDeleteMessageAPI, input *sqs.Delete
 	return api.DeleteMessage(c, input)
 }
 
-func dequeue(ctx *context.Context, queueUrl string) *types.Message {
+func dequeueFromSqs(ctx *context.Context, queueUrl string) (OllamaRequestMessage, error) {
 	cfg, err := config.LoadDefaultConfig(*ctx)
 	client := sqs.NewFromConfig(cfg)
 
@@ -137,19 +137,32 @@ func dequeue(ctx *context.Context, queueUrl string) *types.Message {
 
 	msgResult, err := GetMessages(*ctx, client, gMInput)
 	if err != nil {
-		fmt.Println("Got an error receiving messages:")
-		fmt.Println(err)
-		return nil
+		return OllamaRequestMessage{}, err
 	}
 
 	if msgResult.Messages != nil && len(msgResult.Messages) > 0 {
 		fmt.Println("Message ID:   " + *msgResult.Messages[0].MessageId)
 		fmt.Println("Message Body: " + *msgResult.Messages[0].Body)
 
-		return &msgResult.Messages[0]
+		rawMessage := &msgResult.Messages[0]
+
+		var ollamaRequestMessage OllamaRequestMessage
+		err := json.Unmarshal([]byte(*rawMessage.Body), &ollamaRequestMessage)
+		if err != nil {
+			log.Fatalln("Error parsing message")
+			return OllamaRequestMessage{}, err
+		}
+		cfg, _ := config.LoadDefaultConfig(*ctx)
+		client := sqs.NewFromConfig(cfg)
+		_queueUrl := queueUrl
+		RemoveMessage(*ctx, client, &sqs.DeleteMessageInput{
+			QueueUrl:      &_queueUrl,
+			ReceiptHandle: rawMessage.ReceiptHandle,
+		})
+		return ollamaRequestMessage, nil
 	} else {
 		fmt.Print(".")
-		return nil
+		return OllamaRequestMessage{}, err
 	}
 }
 
@@ -165,15 +178,9 @@ type OllamaRequestMessage struct {
 
 const queueUrl string = "https://sqs.ap-northeast-2.amazonaws.com/236145864830/auto-code-review"
 
-func processMessage(ctx *context.Context, message *types.Message) {
-	var ollamaRequestMessage OllamaRequestMessage
-	err := json.Unmarshal([]byte(*message.Body), &ollamaRequestMessage)
-	if err != nil {
-		log.Fatalln("Error parsing message")
-		panic(err)
-	}
+func processMessage(ctx *context.Context, message OllamaRequestMessage) {
 
-	promptString, err := downloadPrompt(ctx, ollamaRequestMessage.PromptUrl)
+	promptString, err := downloadPrompt(ctx, message.PromptUrl)
 	if err != nil {
 		panic(err)
 	}
@@ -188,25 +195,17 @@ func processMessage(ctx *context.Context, message *types.Message) {
 	log.Printf("Review:\n%s\n", reviewResult)
 
 	compareLink := fmt.Sprintf("[%s...%s](/%s/%s/compare/%s...%s)",
-		ollamaRequestMessage.BaseRef, ollamaRequestMessage.HeadRef,
-		ollamaRequestMessage.OwnerName, ollamaRequestMessage.RepoName,
-		ollamaRequestMessage.BaseRef, ollamaRequestMessage.HeadRef)
+		message.BaseRef, message.HeadRef,
+		message.OwnerName, message.RepoName,
+		message.BaseRef, message.HeadRef)
 	reviewComment := fmt.Sprintf("This is an auto-generated code review for %s\n\n%s",
 		compareLink, reviewResult)
 	writeComment(
 		ctx,
-		ollamaRequestMessage.OwnerName,
-		ollamaRequestMessage.RepoName,
-		ollamaRequestMessage.PrNumber,
+		message.OwnerName,
+		message.RepoName,
+		message.PrNumber,
 		reviewComment)
-
-	cfg, _ := config.LoadDefaultConfig(*ctx)
-	client := sqs.NewFromConfig(cfg)
-	_queueUrl := queueUrl
-	RemoveMessage(*ctx, client, &sqs.DeleteMessageInput{
-		QueueUrl:      &_queueUrl,
-		ReceiptHandle: message.ReceiptHandle,
-	})
 }
 
 func authGitHubApp(ctx *context.Context) *github.Client {
