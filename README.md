@@ -8,3 +8,4 @@ Some optional environment variables may be set:
 
 - `REDIS_HOST`, if Redis is used as a message queue
 - `AWS_S3_ENDPOINT`, if non-AWS S3 storage is used
+- `GITHUB_BASE_URL` (e.g., `https://yourcompany.com/api/v3`)

@@ -272,15 +272,21 @@ func authGitHubApp(ctx *context.Context) *github.Client {
 		panic(nil)
 	}
 
+	githubBaseUrl := os.Getenv("GITHUB_BASE_URL")
 	keyFilePath := os.Getenv("GITHUB_PRIVATE_KEY_FILE")
 	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, keyFilePath)
-
 	if err != nil {
 		panic(err)
 	}
+	itr.BaseURL = githubBaseUrl
 
-	// Use installation transport with client.
 	client := github.NewClient(&http.Client{Transport: itr})
+	if githubBaseUrl != "" {
+		client, err = client.WithEnterpriseURLs(githubBaseUrl, githubBaseUrl)
+		if err != nil {
+			panic(err)
+		}
+	}
 
 	return client
 }
@@ -290,7 +296,7 @@ func writeComment(ctx *context.Context, owner string, repo string, prNumber int,
 	// TODO: Work with GitHub Enterprise
 
 	input := github.IssueComment{Body: github.String(comment)}
-	createdComment, _, err := client.Issues.CreateComment(*ctx, "suminb", repo, prNumber, &input)
+	createdComment, _, err := client.Issues.CreateComment(*ctx, owner, repo, prNumber, &input)
 	if err != nil {
 		log.Fatalf("Issues.CreateComment returned error: %v", err)
 	}
