@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"time"
 
@@ -29,12 +29,40 @@ func handleError(ctx *gin.Context, err error) {
 	})
 }
 
-func downloadPrompt(ctx *context.Context, s3Url string) ([]byte, error) {
-	sdkConfig, err := config.LoadDefaultConfig(*ctx)
-	if err != nil {
-		return nil, errors.New("couldn't load default configuration. Have you set up your AWS account?")
+func getS3ClientWithEndpoint(ctx *context.Context, endpoint string) (*s3.Client, error) {
+
+	if endpoint == "" {
+		sdkConfig, err := config.LoadDefaultConfig(*ctx)
+		if err != nil {
+			return nil, err
+		}
+		return s3.NewFromConfig(sdkConfig), nil
+	} else {
+		endpointResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+			return aws.Endpoint{
+				URL:               endpoint,
+				HostnameImmutable: true,
+				Source:            aws.EndpointSourceCustom,
+			}, nil
+		})
+		sdkConfig, err := config.LoadDefaultConfig(
+			*ctx,
+			config.WithEndpointResolverWithOptions(endpointResolver),
+			config.WithRegion("auto"),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return s3.NewFromConfig(sdkConfig), nil
 	}
-	s3Client := s3.NewFromConfig(sdkConfig)
+}
+
+func downloadPrompt(ctx *context.Context, s3Url string) ([]byte, error) {
+	s3Endpoint := os.Getenv("AWS_S3_ENDPOINT")
+	s3Client, err := getS3ClientWithEndpoint(ctx, s3Endpoint)
+	if err != nil {
+		return nil, err
+	}
 
 	u, _ := url.Parse(s3Url)
 	s3ObjectOutput, err := s3Client.GetObject(*ctx, &s3.GetObjectInput{
@@ -166,6 +194,28 @@ func dequeueFromSqs(ctx *context.Context, queueUrl string) (OllamaRequestMessage
 	}
 }
 
+func dequeueFromRedis(ctx *context.Context, queueUrl string) (OllamaRequestMessage, error) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "redis-n3r.n3r-project-test-sb.svc.mdpb1.io.navercorp.com:6379",
+		Password: "default", // no password set
+		DB:       0,         // use default DB
+	})
+
+	rawMessage, err := rdb.LPop(*ctx, "review-request").Bytes()
+	if err != nil {
+		return OllamaRequestMessage{}, err
+	}
+	fmt.Printf("rawMessage = %s\n", string(rawMessage))
+
+	var ollamaRequestMessage OllamaRequestMessage
+	err = json.Unmarshal(rawMessage, &ollamaRequestMessage)
+	if err != nil {
+		log.Fatalln("Error parsing message")
+		return OllamaRequestMessage{}, err
+	}
+	return ollamaRequestMessage, nil
+}
+
 type OllamaRequestMessage struct {
 	RunNumber int
 	PrNumber  int
@@ -176,6 +226,7 @@ type OllamaRequestMessage struct {
 	PromptUrl string // S3 URL that contains the prompt
 }
 
+// TODO: Read this value from an environment variable
 const queueUrl string = "https://sqs.ap-northeast-2.amazonaws.com/236145864830/auto-code-review"
 
 func processMessage(ctx *context.Context, message OllamaRequestMessage) {
@@ -209,7 +260,9 @@ func processMessage(ctx *context.Context, message OllamaRequestMessage) {
 }
 
 func authGitHubApp(ctx *context.Context) *github.Client {
+	// TODO: Read this value from an environment variable
 	appId := int64(788325)
+	// TODO: Read this value from an environment variable
 	installationId := int64(45833995)
 	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, "ollama-reviewer.2024-01-06.private-key.pem")
 
@@ -237,30 +290,26 @@ func writeComment(ctx *context.Context, owner string, repo string, prNumber int,
 func main() {
 	ctx := context.Background()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "redis-n3r.n3r-project-test-sb.svc.mdpb1.io.navercorp.com:6379",
-		Password: "default", // no password set
-		DB:       0,         // use default DB
-	})
+	// for {
+	// 	val, err := rdb.LPop(ctx, "foo").Result()
+	// 	if err != nil {
+	// 		fmt.Print(".")
+	// 		time.Sleep(1 * time.Second)
+	// 	} else {
+	// 		fmt.Printf("%s\n", val)
+	// 	}
+	// }
 
 	for {
-		val, err := rdb.LPop(ctx, "foo").Result()
+		message, err := dequeueFromRedis(&ctx, "redis-n3r.n3r-project-test-sb.svc.mdpb1.io.navercorp.com:6379")
 		if err != nil {
 			fmt.Print(".")
 			time.Sleep(1 * time.Second)
 		} else {
-			fmt.Printf("%s\n", val)
+			fmt.Printf("message = %v", message)
+			processMessage(&ctx, message)
 		}
 	}
-
-	// for {
-	// 	message := dequeue(&ctx, queueUrl)
-	// 	if message != nil {
-	// 		processMessage(&ctx, message)
-	// 	} else {
-	// 		time.Sleep(5 * time.Second)
-	// 	}
-	// }
 
 	// 	r := gin.Default()
 	// 	r.GET("/ping", func(c *gin.Context) {
