@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -261,10 +262,18 @@ func processMessage(ctx *context.Context, message OllamaRequestMessage) {
 
 func authGitHubApp(ctx *context.Context) *github.Client {
 	// TODO: Read this value from an environment variable
-	appId := int64(788325)
-	// TODO: Read this value from an environment variable
-	installationId := int64(45833995)
-	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, "ollama-reviewer.2024-01-06.private-key.pem")
+	appId, err := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
+	if err != nil {
+		panic(nil)
+	}
+
+	installationId, err := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
+	if err != nil {
+		panic(nil)
+	}
+
+	keyFilePath := os.Getenv("GITHUB_PRIVATE_KEY_FILE")
+	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, keyFilePath)
 
 	if err != nil {
 		panic(err)
@@ -278,6 +287,7 @@ func authGitHubApp(ctx *context.Context) *github.Client {
 
 func writeComment(ctx *context.Context, owner string, repo string, prNumber int, comment string) {
 	client := authGitHubApp(ctx)
+	// TODO: Work with GitHub Enterprise
 
 	input := github.IssueComment{Body: github.String(comment)}
 	createdComment, _, err := client.Issues.CreateComment(*ctx, "suminb", repo, prNumber, &input)
@@ -290,23 +300,14 @@ func writeComment(ctx *context.Context, owner string, repo string, prNumber int,
 func main() {
 	ctx := context.Background()
 
-	// for {
-	// 	val, err := rdb.LPop(ctx, "foo").Result()
-	// 	if err != nil {
-	// 		fmt.Print(".")
-	// 		time.Sleep(1 * time.Second)
-	// 	} else {
-	// 		fmt.Printf("%s\n", val)
-	// 	}
-	// }
-
+	redisHost := os.Getenv("REDIS_HOST")
 	for {
-		message, err := dequeueFromRedis(&ctx, "redis-n3r.n3r-project-test-sb.svc.mdpb1.io.navercorp.com:6379")
+		message, err := dequeueFromRedis(&ctx, redisHost)
 		if err != nil {
 			fmt.Print(".")
 			time.Sleep(1 * time.Second)
 		} else {
-			fmt.Printf("message = %v", message)
+			fmt.Printf("message = %v\n", message)
 			processMessage(&ctx, message)
 		}
 	}
