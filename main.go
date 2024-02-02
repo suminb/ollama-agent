@@ -317,37 +317,4 @@ func main() {
 			processMessage(&ctx, message)
 		}
 	}
-
-	// 	r := gin.Default()
-	// 	r.GET("/ping", func(c *gin.Context) {
-	// 		c.JSON(http.StatusOK, gin.H{
-	// 			"message": "pong",
-	// 		})
-	// 	})
-	// 	r.POST("/query", func(c *gin.Context) {
-	// 		err := c.Request.ParseForm()
-	// 		if err != nil {
-	// 			handleError(c, err)
-	// 			return
-	// 		}
-	// 		promptUrl := c.Request.Form.Get("promptUrl")
-
-	// 		promptString, err := downloadPrompt(ctx, promptUrl)
-	// 		if err != nil {
-	// 			handleError(c, err)
-	// 			return
-	// 		}
-
-	// 		out, err := exec.Command("ollama", "run", "dolphin-mixtral", string(promptString)).Output()
-	// 		if err != nil {
-	// 			handleError(c, err)
-	// 			return
-	// 		}
-
-	//		c.JSON(http.StatusOK, gin.H{
-	//			"message": string(out),
-	//		})
-	//	})
-	//
-	// r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
 }
